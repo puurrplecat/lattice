@@ -11,7 +11,7 @@ impl<const H: usize, const W: usize> Equation<H, W> {
         Equation {
             matrix: Matrix::from_slice(a),
             equals_to: Matrix::from_slice(b),
-            error_mod: modulus / 10,
+            error_mod: modulus / 16,
             modulus,
         }
     }
@@ -19,29 +19,28 @@ impl<const H: usize, const W: usize> Equation<H, W> {
         Equation {
             matrix,
             equals_to,
-            error_mod: modulus / 10,
+            error_mod: modulus / 16,
             modulus,
         }
     }
     pub fn add_noise(&mut self) {
-        let mut rng = noise_rng(11);
-        (0..H).for_each(
-            |x| {
-                let v = rng() % self.error_mod;
-                let sign = if x % 2 == 1 {1} else {-1};
-                self.equals_to[x][0] += sign * v;
-            } // alternates sign to subtract or add error, this ensures on average the error does not exceed the mod
-        );
+        let mut rng = rng(714014738);
+        for i in 0..H {
+            let v = rng() as i64 % self.error_mod;
+            let sign = if rng() % 2 == 1 {1} else {-1};
+            self.equals_to[i][0] += sign * v;
+            // alternates sign to subtract or add error, this ensures on average the error does not exceed the mod
+        }
     }
     pub fn encrypt(&mut self, bit: i64) -> (Matrix<1, W>, i64) {
-        let mut rng = index_rng(10);
-        let start = rng() % (H / 2);
-        let end = rng() % (H / 2) + H / 2;
+        let mut random_index: Vec<usize> = Vec::with_capacity(4);
+        let mut rng = rng(10);
+        random_index.fill_with(|| rng());
         // Adds some random rows together. This makes it harder than using a row directly from the public key.
-        // (Is it hard to find which rows were added together?)
+        // (Is it hard to find which rows were added together? probably, due to the added errors)
         let mut row = Matrix::<1, W>::default();
         let mut equals_to = 0;
-        for i in start .. end {
+        for i in random_index {
             row += self.matrix[i];
             equals_to += self.equals_to[i][0];
         }
@@ -54,21 +53,7 @@ impl<const H: usize, const W: usize> Equation<H, W> {
     }
 }
 
-// This is an lfrs
-fn noise_rng (mut seed: i64) -> impl FnMut() -> i64 {
-    move || {
-        let mut out = 0;
-        for _ in 0..63 { // otherwise it'll overflow if we do up to 64 and push one more bit into the sign bit
-            let newbit = (seed ^ (seed >> 1) ^ (seed >> 3) ^ (seed >> 4)) & 1;
-            out <<= 1;
-            out |= seed & 1;
-            seed = (seed >> 1) | (newbit << 63);
-        }
-        out
-    }
-}
-
-fn index_rng (mut seed: usize) -> impl FnMut() -> usize {
+fn rng (mut seed: usize) -> impl FnMut() -> usize {
     move || {
         let mut out = 0;
         for _ in 0..64 { // otherwise it'll overflow if we do up to 64 and push one more bit into the sign bit
