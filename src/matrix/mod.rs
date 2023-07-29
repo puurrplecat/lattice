@@ -1,57 +1,11 @@
-use std::{ops::{Index, IndexMut, Add, AddAssign, Sub, SubAssign, Mul, Rem, RemAssign}, fmt::Display};
-
-pub struct Equation<const H: usize, const W: usize> {
-    matrix: Matrix<H, W>,
-    equals_to: Matrix<H, 1>,
-    error_mod: i64,
-    modulus: i64,
-}
-impl<const H: usize, const W: usize> Equation<H, W> {
-    pub fn from_slices(a: &[i64], b: &[i64], modulus: i64) -> Self {
-        Equation {
-            matrix: Matrix::from_slice(a),
-            equals_to: Matrix::from_slice(b),
-            error_mod: modulus / 16,
-            modulus,
-        }
-    }
-    pub fn from_matrices(matrix: Matrix<H, W>, equals_to: Matrix<H, 1>, modulus: i64) -> Self {
-        Equation {
-            matrix,
-            equals_to,
-            error_mod: modulus / 16,
-            modulus,
-        }
-    }
-    pub fn add_noise(&mut self) {
-        let mut rng = rng(714014738);
-        for i in 0..H {
-            let v = rng() as i64 % self.error_mod;
-            let sign = if rng() % 2 == 1 {1} else {-1};
-            self.equals_to[i][0] += sign * v;
-            // alternates sign to subtract or add error, this ensures on average the error does not exceed the mod
-        }
-    }
-    pub fn encrypt(&mut self, bit: i64) -> (Matrix<1, W>, i64) {
-        let mut random_index: Vec<usize> = Vec::with_capacity(4);
-        let mut rng = rng(10);
-        random_index.fill_with(|| rng());
-        // Adds some random rows together. This makes it harder than using a row directly from the public key.
-        // (Is it hard to find which rows were added together? probably, due to the added errors)
-        let mut row = Matrix::<1, W>::default();
-        let mut equals_to = 0;
-        for i in random_index {
-            row += self.matrix[i];
-            equals_to += self.equals_to[i][0];
-        }
-
-        match bit {
-            1 => { (row, (equals_to + self.modulus / 2) % self.modulus) }
-            0 => { (row, equals_to % self.modulus)                      }
-            _ => { panic!("Cannot encrypt a non binary value")          }
-        }
-    }
-}
+pub mod encrypt;
+pub mod keygen;
+pub mod decrypt;
+use std::ops::{Index, IndexMut, Add, AddAssign, Sub, SubAssign, Mul, Rem, RemAssign};
+use std::fmt::Display;
+use std::path::Path;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 fn rng (mut seed: usize) -> impl FnMut() -> usize {
     move || {
@@ -66,270 +20,352 @@ fn rng (mut seed: usize) -> impl FnMut() -> usize {
     }
 }
 
-impl<const H: usize, const W: usize> Display for Equation<H, W> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}", self.matrix).unwrap();
-        writeln!(f, "{}", self.equals_to).unwrap();
-        write!(f, "{}", self.modulus)
+pub struct Equation {
+    matrix: Matrix,
+    result: Matrix,
+    modulus: i64,
+}
+
+impl Equation {
+    pub fn from_matrices(matrix: Matrix, result: Matrix, modulus: i64) -> Self {
+        Equation {
+            matrix,
+            result,
+            modulus,
+        }
+    }
+    pub fn get_height(&self) -> usize {
+        self.matrix.height
+    }
+    pub fn get_width(&self) -> usize {
+        self.matrix.width
+    }
+    pub fn get_mod(&self) -> i64 {
+        self.modulus
+    }
+    pub fn read_equation_from_file(path: &Path) -> Equation {
+        let file = BufReader::new(File::open(path.join("public_key.txt")).expect("File went and offed 'imself"));
+        let mut lines = file.lines();
+        let header = lines.next().unwrap().unwrap()
+                          .split_whitespace()
+                          .map(|x| x.parse().unwrap())
+                          .collect::<Vec<i64>>();
+        let (modulus, height) = (header[0], header[1] as usize);
+        let matrix = Matrix::from_slice(&lines.next().unwrap().unwrap()
+                                              .split_whitespace()
+                                              .map(|x| x.parse().unwrap())
+                                              .collect::<Vec<i64>>(), height);
+        let result = Matrix::from_slice(&lines.next().unwrap().unwrap()
+                                              .split_whitespace()
+                                              .map(|x| x.parse().unwrap())
+                                              .collect::<Vec<i64>>(), height);
+        Equation::from_matrices(matrix, result, modulus)
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Matrix <const H: usize, const W: usize> {
-    matrix: [Row<W>; H],
+impl Display for Equation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{} {}", self.modulus, self.matrix.height).unwrap();
+        writeln!(f, "{}", self.matrix).unwrap();
+        writeln!(f, "{}", self.result)
+    }
 }
 
-impl<const H: usize, const W: usize> Matrix<H, W> {
-    pub fn from_slice(v: &[i64]) -> Matrix<H, W> {
-        assert!(H > 0);
-        assert!(v.len() % H == 0);
-        let width = v.len() / H;
+impl std::fmt::Debug for Equation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{:?}", self.matrix).unwrap();
+        writeln!(f, "{:?}", self.result).unwrap();
+        writeln!(f, "{:?}", self.modulus)
+    }
+}
+
+#[derive(Clone)]
+pub struct Matrix {
+    matrix: Vec<Row>,
+    height: usize,
+    width: usize,
+}
+
+impl Matrix {
+    pub fn from_slice(v: &[i64], height: usize) -> Matrix {
+        assert!(height > 0);
+        assert!(v.len() % height == 0);
+        let width = v.len() / height;
         Matrix {
             matrix: v
                     .chunks(width)
-                    .map(|y| Row::new(y))
-                    .collect::<Vec<Row<W>>>()
-                    .try_into().unwrap()
+                    .map(Row::new) // OMG NO CLOSURE
+                    .collect::<Vec<Row>>(),
+            height,
+            width,
         }
     }
-    pub fn map(&mut self, f: fn(&i64) -> i64) {
+    pub fn matrix_builder(height: usize, width: usize) -> Matrix {
+        Matrix {
+            matrix: Vec::with_capacity(height),
+            height,
+            width,
+        }
+    }
+
+    pub fn push_row(&mut self, row: Row) {
+        self.matrix.push(row);
+    }
+
+    pub fn push_value(&mut self, v: i64) {
+        assert!(self.width == 1);
+        self.matrix.push(Row(vec![v]));
+    }
+
+    // This replaces the matrix, so we need to drop the original.
+    pub fn map(&mut self, f: impl Fn(&i64) -> i64) {
         self.matrix = self.matrix
                       .iter()
-                      .map(|x| Row::map(*x, f))
-                      .collect::<Vec<Row<W>>>()
-                      .try_into().unwrap();
+                      .map(|x| Row::map(x, &f))
+                      .collect::<Vec<Row>>()
     }
 }
 
-impl<const H: usize, const W: usize> Default for Matrix<H, W> {
-    fn default() -> Self {
-        Matrix {
-            matrix: (0..H)
-                    .map(|_| Row::default())
-                    .collect::<Vec<Row<W>>>()
-                    .try_into().unwrap()
-        }
-    }
-}
-
-impl<const H: usize, const W: usize> Index<usize> for Matrix<H, W> {
-    type Output = Row<W>;
-    fn index(&self, i: usize) -> &Row<W> {
+impl Index<usize> for Matrix {
+    type Output = Row;
+    fn index(&self, i: usize) -> &Self::Output {
         &self.matrix[i]
     }
 }
 
-impl<const H: usize, const W: usize> IndexMut<usize> for Matrix<H, W> {
-    fn index_mut(&mut self, i: usize) -> &mut Row<W> {
-        &mut self.matrix[i]
+impl IndexMut<usize> for Matrix {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.matrix[index]
     }
 }
 
-impl<const W: usize> From<Row<W>> for Matrix<1, W> {
-    fn from(value: Row<W>) -> Self {
-        Matrix {matrix: [value]}
+impl From<Row> for Matrix {
+    fn from(row: Row) -> Self {
+        let width = row.0.len();
+        Matrix {matrix: vec![row], height: 1, width}
     }
 }
 
-// Due to type constraits, I can force correct matrix multiplication at compile time due to the const dimensions H and W and M
-impl<const H: usize, const W: usize, const M: usize> Mul<Matrix<W, M>> for Matrix<H, W> {
-    type Output = Matrix<H, M>;
-    fn mul(self, rhs: Matrix<W, M>) -> Matrix<H, M> {
-        let mut new = Vec::with_capacity(H * M);
-        for i in 0..H {
-            for j in 0..M {
+impl Mul<Matrix> for Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: Matrix) -> Self::Output {
+        assert!(rhs.height == self.width);
+        let mut new = Vec::with_capacity(rhs.height * self.width);
+        for i in 0..self.height {
+            for j in 0..rhs.width {
                 let mut sum = 0;
-                for k in 0..W { // note self.width == rhs.height
+                for k in 0..self.width { // note self.width == rhs.height
                     sum += self[i][k] * rhs[k][j];
                 }
             new.push(sum);
             }
         } 
-        Matrix::from_slice(&new)
+        Matrix::from_slice(&new, self.height)
     }
 }
 
-impl<const H: usize, const W: usize> Add for Matrix<H, W> {
-    type Output = Matrix<H, W>;
-    fn add(self, rhs: Matrix<H, W>) -> Matrix<H, W> {
-        Matrix {
-            matrix: self.matrix
-                    .iter()
-                    .zip(rhs.matrix)
-                    .map(|(x, y)| *x + y)
-                    .collect::<Vec<Row<W>>>()
-                    .try_into().unwrap()
-        }
+impl Mul<Matrix> for &Matrix {
+    type Output = Matrix;
+    fn mul(self, rhs: Matrix) -> Self::Output {
+        assert!(rhs.height == self.width);
+        let mut new = Vec::with_capacity(rhs.height * self.width);
+        for i in 0..self.height {
+            for j in 0..rhs.width {
+                let mut sum = 0;
+                for k in 0..self.width { // note self.width == rhs.height
+                    sum += self[i][k] * rhs[k][j];
+                }
+            new.push(sum);
+            }
+        } 
+        Matrix::from_slice(&new, self.height)
     }
 }
 
-impl<const W: usize> Add<Row<W>> for Matrix<1, W> {
-    type Output = Matrix<1, W>;
-    fn add(self, rhs: Row<W>) -> Self::Output {
-        Matrix {matrix: [self.matrix[0] + rhs]}
-    }
-}
-
-impl<const H: usize, const W: usize> AddAssign for Matrix<H, W> {
-    fn add_assign(&mut self, mut rhs: Matrix<H, W>) {
-        let mut i = 0;
-        // We know rhs is owned and dropped by this function, so mem::take won't mess things up
+impl Add<Matrix> for Matrix {
+    type Output = Matrix;
+    fn add(mut self, rhs: Matrix) -> Self::Output {
+        assert!(self.height == rhs.height && self.width == rhs.width);
         self.matrix
-            .iter_mut()
-            .for_each(|x| {*x += std::mem::take(&mut rhs[i]); i += 1});
+        .iter_mut()
+        .zip(rhs.matrix.iter())
+        .for_each(|(x, y)| *x += y);
+        Matrix {matrix: std::mem::take(&mut self.matrix), height: self.height, width: self.width}
     }
 }
 
-impl<const W: usize> AddAssign<Row<W>> for Matrix<1, W> {
-    fn add_assign(&mut self, rhs: Row<W>) {
-        // Guaranteed a row at index 0 in a Matrix<1, W>
+impl Add<Row> for Matrix {
+    type Output = Matrix;
+    fn add(mut self, rhs: Row) -> Self::Output {
+        assert!(self.height == 1);
+        Matrix {matrix: vec![std::mem::take(&mut self.matrix[0]) + rhs], height: 1, width: self.width}
+    }
+}
+
+impl AddAssign for Matrix {
+    fn add_assign(&mut self, rhs: Self) {
+        self.matrix
+        .iter_mut()
+        .zip(rhs.matrix.iter())
+        .for_each(|(x, y)| *x += y);
+    }
+}
+
+impl AddAssign<&Row> for Matrix {
+    fn add_assign(&mut self, rhs: &Row) {
+        assert!(self.height == 1);
         self.matrix[0] += rhs;
-    }
+    }    
 }
 
-impl<const H: usize, const W: usize> Sub for Matrix<H, W> {
-    type Output = Matrix<H, W>;
-    fn sub(self, rhs: Matrix<H, W>) -> Matrix<H, W> {
-        Matrix {
-            matrix: self.matrix
-                    .iter()
-                    .zip(rhs.matrix)
-                    .map(|(x, y)| *x - y)
-                    .collect::<Vec<Row<W>>>()
-                    .try_into().unwrap()
-        }
-    }
-}
-
-impl<const H: usize, const W: usize> SubAssign for Matrix<H, W> {
-    fn sub_assign(&mut self, mut rhs: Matrix<H, W>) {
-        let mut i = 0;
+impl Rem<i64> for Matrix {
+    type Output = Self;
+    fn rem(mut self, rhs: i64) -> Self::Output {
         self.matrix
-            .iter_mut()
-            .for_each(|x| {*x += std::mem::take(&mut rhs[i]); i -= 1});
+        .iter_mut()
+        .for_each(|x| *x %= rhs);
+        Matrix {matrix: std::mem::take(&mut self.matrix), height: self.height, width: self.width}
     }
 }
 
-impl<const H: usize, const W: usize> Display for Matrix<H, W> {
+impl Display for Matrix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if W == 1 {
+        for i in 0..self.height - 1 {
+            write!(f, "{} ", self.matrix[i]).unwrap();
+        }
+        write!(f, "{}", self.matrix[self.height - 1])
+    }
+}
+
+impl std::fmt::Debug for Matrix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.width == 1 {
             // Column vector 
-            for i in 0..H - 1 {
+            for i in 0..self.height - 1 {
                 write!(f, "{} ", self[i][0]).unwrap();
             }
-            write!(f, "{} ", self[H - 1][0])
+            write!(f, "{} ", self[self.height - 1][0])
 
         } else {
-            for i in 0..H - 1 {
+            for i in 0..self.height - 1 {
                 writeln!(f, "{}", self[i]).unwrap();
             }
-            write!(f, "{}", self[H - 1])
+            write!(f, "{}", self[self.height - 1])
         }
     }
 }
 
 // The row struct represents a linear combination
-#[derive(Clone, Copy)]
-pub struct Row <const W: usize> {
-    eq: [i64; W],
-}
+#[derive(Clone, Default)]
+pub struct Row (Vec<i64>);
 
-impl<const W: usize> Row<W> {
-    pub fn new(v: &[i64]) -> Row<W> {
-        Row { eq: v.try_into().unwrap() }
+impl Row {
+    pub fn new(v: &[i64]) -> Self {
+        Row(v.into())
     }
-    fn map(self, f: fn(&i64) -> i64) -> Row<W> {
-        Row {
-            eq: self.eq
-                .iter()
-                .map(f)
-                .collect::<Vec<i64>>()
-                .try_into().unwrap()
-        }
+    fn map(&self, f: &impl Fn(&i64) -> i64) -> Self {
+        Row (self.0
+             .iter()
+             .map(f)
+             .collect::<Vec<i64>>()
+        )
     }
-}
-
-impl<const W: usize> Default for Row<W> {
-    // How nice are const generics
-    fn default() -> Row<W> {
-        Row { eq: [0; W] }
+    fn new_zeroed(width: usize) -> Self {
+        let mut row = vec![0; width];
+        row.fill(0);
+        Row(row)
     }
 }
 
-impl<const W: usize> Index<usize> for Row<W> {
+impl Index<usize> for Row {
     type Output = i64;
-    fn index(&self, i: usize) -> &Self::Output {
-        &self.eq[i]
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
     }
 }
 
-impl<const W: usize> IndexMut<usize> for Row<W> {
-    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
-        &mut self.eq[i]
+impl IndexMut<usize> for Row {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.0[index]
     }
 }
 
-impl<const W: usize> Add for Row<W> {
-    type Output = Row<W>;
-    fn add(self, rhs: Row<W>) -> Row<W> {
-        Row { 
-            eq: self.eq
-                .iter()
-                .zip(rhs.eq)
-                .map(|(x, y)| x + y)
-                .collect::<Vec<i64>>()
-                .try_into().unwrap()
-        }
+impl Add for &mut Row {
+    type Output = Row;
+    fn add(self, rhs: &mut Row) -> Self::Output {
+        self.0
+        .iter_mut()
+        .zip(rhs.0.iter())
+        .for_each(|(x, y)| *x += *y);
+        Row(std::mem::take(&mut self.0))
     }
 }
 
-impl<const W: usize> AddAssign for Row<W> {
-    fn add_assign(&mut self, rhs: Row<W>) {
+impl Add for Row {
+    type Output = Row;
+    fn add(self, rhs: Row) -> Self::Output {
+        let mut new = Vec::with_capacity(self.0.len());
+        self.0
+        .iter()
+        .zip(rhs.0.iter())
+        .for_each(|(x, y)| new.push(x + y));
+        Row(new)
+    }
+}
+
+impl AddAssign<&Row> for Row {
+    fn add_assign(&mut self, rhs: &Row) {
+        self.0
+        .iter_mut()
+        .zip(rhs.0.iter())
+        .for_each(|(x, y)| *x += *y);
+    }
+}
+
+impl AddAssign for Row {
+    fn add_assign(&mut self, rhs: Self) {
         let mut i = 0;
-        self.eq
+        self.0
             .iter_mut()
             .for_each(|x| {*x += rhs[i]; i += 1});
     }
 }
 
-
-impl<const W: usize> Sub for Row<W> {
-    type Output = Row<W>;
-    fn sub(self, rhs: Row<W>) -> Row<W> {
-        Row {
-            eq: self.eq
-                .iter()
-                .zip(rhs.eq)
-                .map(|(x, y)| x - y)
-                .collect::<Vec<i64>>()
-                .try_into().unwrap()
-        }
+impl Sub for Row {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self::Output {
+        Row (self.0
+             .iter()
+             .zip(rhs.0.iter())
+             .map(|(x, y)| x - y)
+             .collect::<Vec<i64>>(),
+                     )
     }
 }
 
-impl<const W: usize> SubAssign for Row<W> {
-    fn sub_assign(&mut self, rhs: Row<W>) {
+impl SubAssign for Row {
+    fn sub_assign(&mut self, rhs: Self) {
         let mut i = 0;
-        self.eq
+        self.0
             .iter_mut()
             .for_each(|x| {*x -= rhs[i]; i += 1});
     }
 }
 
 // The Inner Product
-impl<const W: usize> Mul for Row<W> {
+impl Mul for Row {
     type Output = i64;
     fn mul(self, rhs: Self) -> Self::Output {
-        self.eq
+        self.0
             .iter()
-            .zip(rhs.eq)
+            .zip(rhs.0.iter())
             .fold(0, |acc, (x, y)| acc + x * y)
     }
 }
 
-impl<const W: usize> Display for Row<W> {
+impl Display for Row {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let n = self.eq.len() - 1;
+        let n = self.0.len() - 1;
         for i in 0 .. n {
             write!(f, "{} ", self[i]).unwrap();
         }
@@ -337,9 +373,9 @@ impl<const W: usize> Display for Row<W> {
     }
 }
 
-impl<const W: usize> std::fmt::Debug for Row<W> {
+impl std::fmt::Debug for Row {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let n = self.eq.len() - 1;
+        let n = self.0.len() - 1;
         write!(f, "[").unwrap();
         for i in 0 .. n {
             write!(f, "{}, ", self[i]).unwrap();
@@ -348,33 +384,21 @@ impl<const W: usize> std::fmt::Debug for Row<W> {
     }
 }
 
-
-
-impl<const W: usize> std::iter::IntoIterator for Row<W> {
-    type Item = i64;
-    type IntoIter = std::array::IntoIter<Self::Item, W>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.eq.into_iter()
+impl Rem<i64> for Row {
+    type Output = Row;
+    fn rem(self, m: i64) -> Row {
+        Row (self.0
+             .into_iter()
+             .map(|x| x % m)
+             .collect::<Vec<i64>>(),
+                     )
     }
 }
 
-impl<const W: usize> Rem<i64> for Row<W> {
-    type Output = Row<W>;
-    fn rem(self, m: i64) -> Row<W> {
-        Row {
-            eq: self.eq
-                .into_iter()
-                .map(|x| x % m)
-                .collect::<Vec<i64>>()
-                .try_into().unwrap()
-        }
-    }
-}
-
-impl<const W: usize> RemAssign<i64> for Row<W> {
-    fn rem_assign(&mut self, m: i64) {
-        self.eq
-            .iter_mut()
-            .for_each(|x| *x %= m);
+impl RemAssign<i64> for Row {
+    fn rem_assign(&mut self, rhs: i64) {
+        self.0
+        .iter_mut()
+        .for_each(|x| *x %= rhs);
     }
 }
