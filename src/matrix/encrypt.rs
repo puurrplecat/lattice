@@ -33,9 +33,8 @@ fn encrypt_bit(equation: &Equation) -> impl '_ + FnMut(u8) -> (Row, i64) {
     }
 }
 
-pub fn encrypt_char(equation: &Equation, char: String) -> (Matrix, Matrix) {
+pub fn encrypt_char(equation: &Equation, char: String, bit_encrypt: &mut impl FnMut(u8) -> (Row, i64)) -> (Matrix, Matrix) {
     let byte = char.as_bytes();
-    let mut bit_encrypt = encrypt_bit(equation);
     let mut new_matrix = Matrix::matrix_builder(8, equation.get_width());
     let mut result = Matrix::matrix_builder(8, 1); // column vector
     for i in (0..8).rev() {
@@ -50,31 +49,12 @@ pub fn encrypt_char(equation: &Equation, char: String) -> (Matrix, Matrix) {
 pub fn encrypt_string(equation: &Equation, name: String, username: String, password: String, path: &Path) {
     let mut file = File::create(path.join(name)).expect("File jumped off a cliff");
     writeln!(file, "{}", equation.modulus).unwrap();
+    let mut bit_encrypt = encrypt_bit(equation);
+    // TODO USERNAME AND PASSWORD
     for i in username.chars() {
         println!("encrypting {}", i);
-        let (vec, result) = encrypt_char(equation, i.to_string());
+        let (vec, result) = encrypt_char(equation, i.to_string(), &mut bit_encrypt);
         writeln!(file, "{}", vec).unwrap();
         writeln!(file, "{}", result).unwrap();
     }
-}
-
-fn decrypt_bit(ans: i64, v: i64, modulus: i64) -> u8 {
-    let val = i64::abs((v - ans) % modulus); // always positive modulus.
-    if std::cmp::min(modulus - val, val) < i64::abs(val - modulus / 2) {
-        0
-    } else {
-        1
-    }
-}
-
-pub fn decrypt_char(encrypt_matrix: Matrix, encrypt_result: Matrix, priv_key: Matrix, modulus: i64) -> Result<String, FromUtf8Error> {
-    let mut decrypt_result = encrypt_matrix * priv_key;
-    decrypt_result.map(|x| x % modulus);
-    let mut i = -1;
-    let decrypt_string = decrypt_result.matrix
-    .iter()
-    .zip(encrypt_result.matrix.iter())
-    .map(|(x, y)| decrypt_bit(x[0], y[0], modulus))
-    .fold(0, |acc, x| {i += 1; acc ^ (x << 7 >> i)});
-    std::string::String::from_utf8(vec![decrypt_string])
 }

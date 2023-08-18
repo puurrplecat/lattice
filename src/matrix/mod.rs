@@ -146,9 +146,9 @@ impl From<Row> for Matrix {
     }
 }
 
-impl Mul<Matrix> for Matrix {
+impl Mul<&Matrix> for &Matrix {
     type Output = Matrix;
-    fn mul(self, rhs: Matrix) -> Self::Output {
+    fn mul(self, rhs: &Matrix) -> Self::Output {
         assert!(rhs.height == self.width);
         let mut new = Vec::with_capacity(rhs.height * self.width);
         for i in 0..self.height {

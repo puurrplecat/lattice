@@ -27,7 +27,7 @@ fn generate_keys(private_key: &[i64], seed: usize, height: usize, width: usize, 
 fn add_noise(m: &mut Matrix, modulus: i64) {
     let mut rng = rng(714014738);
     for i in 0..m.height {
-        let v = rng() as i64 % modulus / 10;
+        let v = rng() as i64 % 10;
         let sign = if rng() % 2 == 1 {1} else {-1};
         m[i][0] += sign * v;
         // changes sign to subtract or add error, this ensures on average the error does not exceed the mod

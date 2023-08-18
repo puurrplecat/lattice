@@ -1,6 +1,7 @@
 mod matrix;
 use matrix::keygen;
 use matrix::encrypt;
+use matrix::decrypt;
 use std::path::Path;
 
 use matrix::Equation;
@@ -15,19 +16,24 @@ fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     println!("{:?}", args);
     is!(args.len() >= 2, "Too little args given");
+    // args[1] will be master password
     match args[2].as_str() {
         "keygen" => {
             is!(args.len() >= 3, "Too little args given for keygen instruction");
             keygen::write_keys(path, sample_private_key, 10, 211);
         }
         "encrypt" => {
-            is!(args.len() >= 7, "Too little args given for encrypt instruction");
+            is!(args.len() >= 6, "Too little args given for encrypt instruction");
             let equation = Equation::read_equation_from_file(path);
             let name = std::mem::take(&mut args[3]);
             let username = std::mem::take(&mut args[4]);
             let password = std::mem::take(&mut args[5]);
             encrypt::encrypt_string(&equation, name, username, password, path);
-
+        }
+        "decrypt" => {
+            let equation = Equation::read_equation_from_file(path);
+            let username = decrypt::decrypt_file(equation, path, std::mem::take(&mut args[3]), sample_private_key);
+            println!("{}", username);
         }
         _ => ()
     }
