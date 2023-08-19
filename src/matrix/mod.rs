@@ -1,16 +1,16 @@
 pub mod encrypt;
 pub mod keygen;
 pub mod decrypt;
-use std::ops::{Index, IndexMut, Add, AddAssign, Sub, SubAssign, Mul, Rem, RemAssign};
+use std::ops::{Index, IndexMut, Add, AddAssign, Mul, Rem, RemAssign};
 use std::fmt::Display;
 use std::path::Path;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Lines};
 
 fn rng (mut seed: usize) -> impl FnMut() -> usize {
     move || {
         let mut out = 0;
-        for _ in 0..64 { // otherwise it'll overflow if we do up to 64 and push one more bit into the sign bit
+        for _ in 0..64 {
             let newbit = (seed ^ (seed >> 1) ^ (seed >> 3) ^ (seed >> 4)) & 1;
             out <<= 1;
             out |= seed & 1;
@@ -40,9 +40,6 @@ impl Equation {
     pub fn get_width(&self) -> usize {
         self.matrix.width
     }
-    pub fn get_mod(&self) -> i64 {
-        self.modulus
-    }
     pub fn read_equation_from_file(path: &Path) -> Equation {
         let file = BufReader::new(File::open(path.join("public_key.txt")).expect("File went and offed 'imself"));
         let mut lines = file.lines();
@@ -51,14 +48,8 @@ impl Equation {
                           .map(|x| x.parse().unwrap())
                           .collect::<Vec<i64>>();
         let (modulus, height) = (header[0], header[1] as usize);
-        let matrix = Matrix::from_slice(&lines.next().unwrap().unwrap()
-                                              .split_whitespace()
-                                              .map(|x| x.parse().unwrap())
-                                              .collect::<Vec<i64>>(), height);
-        let result = Matrix::from_slice(&lines.next().unwrap().unwrap()
-                                              .split_whitespace()
-                                              .map(|x| x.parse().unwrap())
-                                              .collect::<Vec<i64>>(), height);
+        let matrix = Matrix::read_matrix(&mut lines, height);
+        let result = Matrix::read_matrix(&mut lines, height);
         Equation::from_matrices(matrix, result, modulus)
     }
 }
@@ -124,6 +115,14 @@ impl Matrix {
                       .map(|x| Row::map(x, &f))
                       .collect::<Vec<Row>>()
     }
+    // the next line is a sequence of numbers which can be read as a matrix of some height.
+    pub fn read_matrix(lines: &mut Lines<BufReader<File>>, height: usize) -> Matrix {
+        Matrix::from_slice(&lines.next().unwrap().unwrap()
+                                 .split_whitespace()
+                                 .map(|x| x.parse().unwrap())
+                                 .collect::<Vec<i64>>()
+            , height)
+    }
 }
 
 impl Index<usize> for Matrix {
@@ -149,24 +148,6 @@ impl From<Row> for Matrix {
 impl Mul<&Matrix> for &Matrix {
     type Output = Matrix;
     fn mul(self, rhs: &Matrix) -> Self::Output {
-        assert!(rhs.height == self.width);
-        let mut new = Vec::with_capacity(rhs.height * self.width);
-        for i in 0..self.height {
-            for j in 0..rhs.width {
-                let mut sum = 0;
-                for k in 0..self.width { // note self.width == rhs.height
-                    sum += self[i][k] * rhs[k][j];
-                }
-            new.push(sum);
-            }
-        } 
-        Matrix::from_slice(&new, self.height)
-    }
-}
-
-impl Mul<Matrix> for &Matrix {
-    type Output = Matrix;
-    fn mul(self, rhs: Matrix) -> Self::Output {
         assert!(rhs.height == self.width);
         let mut new = Vec::with_capacity(rhs.height * self.width);
         for i in 0..self.height {
@@ -231,7 +212,7 @@ impl Rem<i64> for Matrix {
 impl Display for Matrix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for i in 0..self.height - 1 {
-            write!(f, "{} ", self.matrix[i]).unwrap();
+            write!(f, "{} ", self.matrix[i])?;
         }
         write!(f, "{}", self.matrix[self.height - 1])
     }
@@ -242,13 +223,13 @@ impl std::fmt::Debug for Matrix {
         if self.width == 1 {
             // Column vector 
             for i in 0..self.height - 1 {
-                write!(f, "{} ", self[i][0]).unwrap();
+                write!(f, "{} ", self[i][0])?;
             }
             write!(f, "{} ", self[self.height - 1][0])
 
         } else {
             for i in 0..self.height - 1 {
-                writeln!(f, "{}", self[i]).unwrap();
+                writeln!(f, "{}", self[i])?;
             }
             write!(f, "{}", self[self.height - 1])
         }
@@ -328,38 +309,6 @@ impl AddAssign for Row {
         self.0
             .iter_mut()
             .for_each(|x| {*x += rhs[i]; i += 1});
-    }
-}
-
-impl Sub for Row {
-    type Output = Self;
-    fn sub(self, rhs: Self) -> Self::Output {
-        Row (self.0
-             .iter()
-             .zip(rhs.0.iter())
-             .map(|(x, y)| x - y)
-             .collect::<Vec<i64>>(),
-                     )
-    }
-}
-
-impl SubAssign for Row {
-    fn sub_assign(&mut self, rhs: Self) {
-        let mut i = 0;
-        self.0
-            .iter_mut()
-            .for_each(|x| {*x -= rhs[i]; i += 1});
-    }
-}
-
-// The Inner Product
-impl Mul for Row {
-    type Output = i64;
-    fn mul(self, rhs: Self) -> Self::Output {
-        self.0
-            .iter()
-            .zip(rhs.0.iter())
-            .fold(0, |acc, (x, y)| acc + x * y)
     }
 }
 
